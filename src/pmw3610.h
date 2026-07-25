@@ -103,6 +103,8 @@ extern "C" {
 #define PMW3610_SVALUE_TO_CPI(svalue) ((uint32_t)(svalue).val1)
 #define PMW3610_SVALUE_TO_TIME(svalue) ((uint32_t)(svalue).val1)
 
+int pmw3610_runtime_command(const struct device *dev, uint32_t command, bool pressed, bool shifted);
+
 #if defined(CONFIG_PMW3610_POLLING_RATE_250) || defined(CONFIG_PMW3610_POLLING_RATE_125_SW)
 #define PMW3610_POLLING_RATE_VALUE 0x0D
 #elif defined(CONFIG_PMW3610_POLLING_RATE_125)

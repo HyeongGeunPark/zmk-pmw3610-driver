@@ -7,9 +7,27 @@
 
 menuconfig PMW3610
     bool "PMW3610 mouse optical sensor"
-  select SPI
+    select SPI
     help
       Enable PMW3610 mouse optical sensor.
+
+config PMW3610_RUNTIME_CONTROLS
+    bool "PMW3610 runtime pointer controls"
+    help
+      Expose a central ZMK behavior for changing CPI and controlling
+      sniping and drag-scroll modes at runtime. Enable this on every
+      split half whose keymap references the behavior.
+
+if PMW3610_RUNTIME_CONTROLS
+
+config PMW3610_RUNTIME_SCROLL_TICK
+    int "Runtime drag-scroll threshold"
+    default 12
+    range 1 32767
+    help
+      Motion counts required to emit one drag-scroll wheel tick.
+
+endif # PMW3610_RUNTIME_CONTROLS
 
 if PMW3610
 
@@ -52,8 +70,17 @@ config PMW3610_SNIPE_CPI_DIVIDOR
 config PMW3610_SCROLL_TICK
     int "PMW3610's required ticks to produce a scroll report"
     default 20
+    range 1 32767
     help
       Scroll tick value.
+
+config PMW3610_SETTINGS_SAVE_DEBOUNCE_MS
+    int "Delay before saving runtime CPI settings"
+    default 1000
+    range 0 60000
+    depends on SETTINGS
+    help
+      Delay runtime CPI setting writes so repeated changes are coalesced.
 
 choice
     prompt "Select PMW3610's polling rate"
@@ -149,11 +176,11 @@ config PMW3610_INVERT_Y
 
 config PMW3610_INVERT_SCROLL_X
   bool "Invert the X axis of the scroll"
-  default PMW3610_INVERT_X
+  default n
 
 config PMW3610_INVERT_SCROLL_Y
   bool "Invert the Y axis of the scroll"
-  default PMW3610_INVERT_Y
+  default n
 
 config PMW3610_AUTOMOUSE_TIMEOUT_MS
   int "Amount of milliseconds the mouse layer will be active after using the trackball"

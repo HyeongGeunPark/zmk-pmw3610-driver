@@ -98,3 +98,49 @@ CONFIG_INPUT=y
 CONFIG_ZMK_MOUSE=y
 CONFIG_PMW3610=y
 ```
+
+## Runtime pointer controls
+
+Enable the behavior on every split half whose keymap references it:
+
+```conf
+CONFIG_PMW3610_RUNTIME_CONTROLS=y
+```
+
+Add the behavior node and command header to the keymap:
+
+```dts
+#include <dt-bindings/zmk/pmw3610.h>
+
+/ {
+    behaviors {
+        pmw: pmw3610_runtime {
+            compatible = "zmk,behavior-pmw3610";
+            #binding-cells = <1>;
+            display-name = "PMW3610 Runtime";
+        };
+    };
+};
+```
+
+The central behavior supports normal CPI increase/decrease, sniping CPI
+increase/decrease, sniping toggle/suppression, and momentary drag-scroll. Normal
+CPI cycles from 400 through 3200 in 200 CPI steps. Sniping CPI cycles through
+200, 400, 600, and 800. Holding either Shift key reverses CPI step direction.
+The initial values can be selected with the sensor node's
+`runtime-default-cpi` and `runtime-default-snipe-cpi` properties. Drag-scroll
+uses 200 CPI and `CONFIG_PMW3610_RUNTIME_SCROLL_TICK` as its wheel threshold.
+
+```dts
+&pmw PMW_CPI_INC
+&pmw PMW_CPI_DEC
+&pmw PMW_SNIPE_CPI_INC
+&pmw PMW_SNIPE_CPI_DEC
+&pmw PMW_SNIPE_TOGGLE
+&pmw PMW_SNIPE_SUPPRESS
+&pmw PMW_DRAG_SCROLL
+```
+
+When Zephyr settings are enabled, the normal and sniping CPI selections are
+saved after `CONFIG_PMW3610_SETTINGS_SAVE_DEBOUNCE_MS`. Mode state itself is not
+persisted.

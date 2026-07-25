@@ -13,11 +13,57 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/input/input.h>
+#include <zephyr/settings/settings.h>
 #include <zmk/keymap.h>
+#include <dt-bindings/zmk/pmw3610.h>
 #include "pmw3610.h"
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(pmw3610, CONFIG_INPUT_LOG_LEVEL);
+
+#define PMW3610_NORMAL_CPI_MIN 400
+#define PMW3610_NORMAL_CPI_STEP 200
+#define PMW3610_NORMAL_CPI_COUNT 15
+#define PMW3610_SNIPE_CPI_MIN 200
+#define PMW3610_SNIPE_CPI_STEP 200
+#define PMW3610_SNIPE_CPI_COUNT 4
+#define PMW3610_DRAG_SCROLL_CPI 200
+#define PMW3610_SETTINGS_VERSION 1
+#define PMW3610_SETTINGS_KEY "pmw3610/runtime"
+
+#if IS_ENABLED(CONFIG_PMW3610_RUNTIME_CONTROLS)
+#define PMW3610_DRAG_SCROLL_TICK CONFIG_PMW3610_RUNTIME_SCROLL_TICK
+#else
+#define PMW3610_DRAG_SCROLL_TICK CONFIG_PMW3610_SCROLL_TICK
+#endif
+
+struct pmw3610_persisted_config {
+    uint8_t version;
+    uint8_t normal_cpi_index;
+    uint8_t snipe_cpi_index;
+};
+
+static uint8_t normal_cpi_default_index(const struct pixart_config *config) {
+    const uint32_t cpi = CLAMP(config->runtime_default_cpi, PMW3610_NORMAL_CPI_MIN,
+                               PMW3610_MAX_CPI);
+    return (cpi - PMW3610_NORMAL_CPI_MIN) / PMW3610_NORMAL_CPI_STEP;
+}
+
+static uint8_t snipe_cpi_default_index(const struct pixart_config *config) {
+    const uint32_t cpi = CLAMP(config->runtime_default_snipe_cpi, PMW3610_SNIPE_CPI_MIN,
+                               PMW3610_SNIPE_CPI_MIN +
+                                   PMW3610_SNIPE_CPI_STEP *
+                                       (PMW3610_SNIPE_CPI_COUNT - 1));
+    return (cpi - PMW3610_SNIPE_CPI_MIN) / PMW3610_SNIPE_CPI_STEP;
+}
+
+static uint32_t normal_cpi(const struct pixart_data *data) {
+    return PMW3610_NORMAL_CPI_MIN + data->normal_cpi_index * PMW3610_NORMAL_CPI_STEP;
+}
+
+static uint32_t snipe_cpi(const struct pixart_data *data) {
+    return PMW3610_SNIPE_CPI_MIN + data->snipe_cpi_index * PMW3610_SNIPE_CPI_STEP;
+}
 
 //////// Sensor initialization steps definition //////////
 // init is done in non-blocking manner (i.e., async), a //
@@ -295,7 +341,8 @@ static int set_cpi(const struct device *dev, uint32_t cpi) {
      * :
      */
 
-    if ((cpi > PMW3610_MAX_CPI) || (cpi < PMW3610_MIN_CPI)) {
+    if ((cpi > PMW3610_MAX_CPI) || (cpi < PMW3610_MIN_CPI) ||
+        (cpi % PMW3610_MIN_CPI) != 0) {
         LOG_ERR("CPI value %u out of range", cpi);
         return -EINVAL;
     }
@@ -461,6 +508,7 @@ static int pmw3610_async_init_check_ob1(const struct device *dev) {
 static int pmw3610_async_init_configure(const struct device *dev) {
     LOG_INF("async_init_configure");
 
+    struct pixart_data *data = dev->data;
     int err = 0;
 
     // clear motion registers first (required in datasheet)
@@ -471,7 +519,7 @@ static int pmw3610_async_init_configure(const struct device *dev) {
 
     // cpi
     if (!err) {
-        err = set_cpi(dev, CONFIG_PMW3610_CPI);
+        err = set_cpi(dev, normal_cpi(data));
     }
 
     // set performace register: run mode, vel_rate, poshi_rate, poslo_rate
@@ -526,7 +574,9 @@ static void pmw3610_async_init(struct k_work *work) {
 
     LOG_INF("PMW3610 async init step %d", data->async_init_step);
 
+    k_mutex_lock(&data->lock, K_FOREVER);
     data->err = async_init_fn[data->async_init_step](dev);
+    k_mutex_unlock(&data->lock);
     if (data->err) {
         LOG_ERR("PMW3610 initialization failed");
     } else {
@@ -540,6 +590,214 @@ static void pmw3610_async_init(struct k_work *work) {
             k_work_schedule(&data->init_work, K_MSEC(async_init_delay[data->async_init_step]));
         }
     }
+}
+
+static bool layer_is_listed(uint8_t layer, const int32_t *layers, size_t layers_len) {
+    for (size_t i = 0; i < layers_len; i++) {
+        if (layer == layers[i]) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void sync_sniping_to_current_layer(const struct device *dev) {
+    struct pixart_data *data = dev->data;
+    const struct pixart_config *config = dev->config;
+    const uint8_t current_layer = zmk_keymap_highest_layer_active();
+
+    if (data->last_layer == current_layer) {
+        return;
+    }
+
+    data->last_layer = current_layer;
+    data->sniping_enabled =
+        layer_is_listed(current_layer, config->snipe_layers, config->snipe_layers_len);
+}
+
+static enum pixart_input_mode get_input_mode_for_current_layer(const struct device *dev) {
+    struct pixart_data *data = dev->data;
+    const struct pixart_config *config = dev->config;
+    const uint8_t current_layer = zmk_keymap_highest_layer_active();
+
+    sync_sniping_to_current_layer(dev);
+
+    if (data->dragscroll_enabled ||
+        layer_is_listed(current_layer, config->scroll_layers, config->scroll_layers_len)) {
+        return SCROLL;
+    }
+
+    if (data->sniping_enabled && !data->sniping_suppressed) {
+        return SNIPE;
+    }
+
+    return MOVE;
+}
+
+static uint32_t cpi_for_mode(const struct pixart_data *data, enum pixart_input_mode mode) {
+    switch (mode) {
+    case SCROLL:
+        return PMW3610_DRAG_SCROLL_CPI;
+    case SNIPE:
+        return snipe_cpi(data);
+    case MOVE:
+    default:
+        return normal_cpi(data);
+    }
+}
+
+static int apply_runtime_cpi(const struct device *dev) {
+    struct pixart_data *data = dev->data;
+
+    if (!data->ready) {
+        return 0;
+    }
+
+    return set_cpi_if_needed(dev, cpi_for_mode(data, get_input_mode_for_current_layer(dev)));
+}
+
+static uint8_t step_cpi_index(uint8_t current, uint8_t count, bool forward) {
+    return forward ? (current + 1) % count : (current + count - 1) % count;
+}
+
+#if IS_ENABLED(CONFIG_SETTINGS)
+static void pmw3610_settings_save_work(struct k_work *work) {
+    struct k_work_delayable *delayable = k_work_delayable_from_work(work);
+    struct pixart_data *data =
+        CONTAINER_OF(delayable, struct pixart_data, settings_save_work);
+    struct pmw3610_persisted_config persisted;
+
+    k_mutex_lock(&data->lock, K_FOREVER);
+    persisted = (struct pmw3610_persisted_config){
+        .version = PMW3610_SETTINGS_VERSION,
+        .normal_cpi_index = data->normal_cpi_index,
+        .snipe_cpi_index = data->snipe_cpi_index,
+    };
+    k_mutex_unlock(&data->lock);
+
+    int err = settings_save_one(PMW3610_SETTINGS_KEY, &persisted, sizeof(persisted));
+    if (err) {
+        LOG_ERR("Failed to save runtime CPI settings: %d", err);
+    }
+}
+
+static void schedule_runtime_settings_save(struct pixart_data *data) {
+    k_work_reschedule(&data->settings_save_work,
+                      K_MSEC(CONFIG_PMW3610_SETTINGS_SAVE_DEBOUNCE_MS));
+}
+
+static int pmw3610_settings_set(const char *name, size_t len, settings_read_cb read_cb,
+                                void *cb_arg) {
+    const char *next;
+
+    if (!settings_name_steq(name, "runtime", &next) || next) {
+        return -ENOENT;
+    }
+
+    struct pmw3610_persisted_config persisted;
+    if (len != sizeof(persisted)) {
+        LOG_WRN("Ignoring runtime CPI settings with unexpected size %zu", len);
+        return 0;
+    }
+
+    int err = read_cb(cb_arg, &persisted, sizeof(persisted));
+    if (err < 0) {
+        return err;
+    }
+
+    if (persisted.version != PMW3610_SETTINGS_VERSION ||
+        persisted.normal_cpi_index >= PMW3610_NORMAL_CPI_COUNT ||
+        persisted.snipe_cpi_index >= PMW3610_SNIPE_CPI_COUNT) {
+        LOG_WRN("Ignoring invalid runtime CPI settings");
+        return 0;
+    }
+
+    const struct device *dev = DEVICE_DT_GET(DT_DRV_INST(0));
+    struct pixart_data *data = dev->data;
+
+    k_mutex_lock(&data->lock, K_FOREVER);
+    data->normal_cpi_index = persisted.normal_cpi_index;
+    data->snipe_cpi_index = persisted.snipe_cpi_index;
+    apply_runtime_cpi(dev);
+    k_mutex_unlock(&data->lock);
+
+    LOG_INF("Loaded runtime CPI settings: normal=%u, snipe=%u", normal_cpi(data),
+            snipe_cpi(data));
+    return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(pmw3610, "pmw3610", NULL, pmw3610_settings_set, NULL, NULL);
+#else
+static void schedule_runtime_settings_save(struct pixart_data *data) {}
+#endif
+
+int pmw3610_runtime_command(const struct device *dev, uint32_t command, bool pressed,
+                            bool shifted) {
+    if (dev == NULL) {
+        return -ENODEV;
+    }
+
+    struct pixart_data *data = dev->data;
+    bool save_settings = false;
+    int err = 0;
+
+    k_mutex_lock(&data->lock, K_FOREVER);
+    sync_sniping_to_current_layer(dev);
+
+    switch (command) {
+    case PMW_CPI_INC:
+    case PMW_CPI_DEC:
+        if (pressed) {
+            const bool forward = (command == PMW_CPI_INC) != shifted;
+            data->normal_cpi_index = step_cpi_index(
+                data->normal_cpi_index, PMW3610_NORMAL_CPI_COUNT, forward);
+            save_settings = true;
+            LOG_INF("Normal CPI changed to %u", normal_cpi(data));
+        }
+        break;
+    case PMW_SNIPE_CPI_INC:
+    case PMW_SNIPE_CPI_DEC:
+        if (pressed) {
+            const bool forward = (command == PMW_SNIPE_CPI_INC) != shifted;
+            data->snipe_cpi_index =
+                step_cpi_index(data->snipe_cpi_index, PMW3610_SNIPE_CPI_COUNT, forward);
+            save_settings = true;
+            LOG_INF("Sniping CPI changed to %u", snipe_cpi(data));
+        }
+        break;
+    case PMW_SNIPE_TOGGLE:
+        if (pressed) {
+            data->sniping_enabled = !data->sniping_enabled;
+        }
+        break;
+    case PMW_SNIPE_SUPPRESS:
+        data->sniping_suppressed = pressed;
+        if (!pressed) {
+            const struct pixart_config *config = dev->config;
+            const uint8_t current_layer = zmk_keymap_highest_layer_active();
+            data->sniping_enabled = layer_is_listed(
+                current_layer, config->snipe_layers, config->snipe_layers_len);
+        }
+        break;
+    case PMW_DRAG_SCROLL:
+        data->dragscroll_enabled = pressed;
+        break;
+    default:
+        err = -ENOTSUP;
+        break;
+    }
+
+    if (!err) {
+        err = apply_runtime_cpi(dev);
+    }
+    k_mutex_unlock(&data->lock);
+
+    if (save_settings) {
+        schedule_runtime_settings_save(data);
+    }
+
+    return err;
 }
 
 #define AUTOMOUSE_LAYER (DT_PROP(DT_DRV_INST(0), automouse_layer))
@@ -561,29 +819,17 @@ static void deactivate_automouse_layer(struct k_timer *timer) {
 K_TIMER_DEFINE(automouse_layer_timer, deactivate_automouse_layer, NULL);
 #endif
 
-static enum pixart_input_mode get_input_mode_for_current_layer(const struct device *dev) {
-    const struct pixart_config *config = dev->config;
-    uint8_t curr_layer = zmk_keymap_highest_layer_active();
-    for (size_t i = 0; i < config->scroll_layers_len; i++) {
-        if (curr_layer == config->scroll_layers[i]) {
-            return SCROLL;
-        }
-    }
-    for (size_t i = 0; i < config->snipe_layers_len; i++) {
-        if (curr_layer == config->snipe_layers[i]) {
-            return SNIPE;
-        }
-    }
-    return MOVE;
-}
-
 static int pmw3610_report_data(const struct device *dev) {
     struct pixart_data *data = dev->data;
     uint8_t buf[PMW3610_BURST_SIZE];
+    int err = 0;
+
+    k_mutex_lock(&data->lock, K_FOREVER);
 
     if (unlikely(!data->ready)) {
         LOG_WRN("Device is not initialized yet");
-        return -EBUSY;
+        err = -EBUSY;
+        goto unlock;
     }
 
     int32_t dividor;
@@ -591,11 +837,11 @@ static int pmw3610_report_data(const struct device *dev) {
     bool input_mode_changed = data->curr_mode != input_mode;
     switch (input_mode) {
     case MOVE:
-        set_cpi_if_needed(dev, CONFIG_PMW3610_CPI);
+        err = set_cpi_if_needed(dev, normal_cpi(data));
         dividor = CONFIG_PMW3610_CPI_DIVIDOR;
         break;
     case SCROLL:
-        set_cpi_if_needed(dev, CONFIG_PMW3610_CPI);
+        err = set_cpi_if_needed(dev, PMW3610_DRAG_SCROLL_CPI);
         if (input_mode_changed) {
             data->scroll_delta_x = 0;
             data->scroll_delta_y = 0;
@@ -603,11 +849,16 @@ static int pmw3610_report_data(const struct device *dev) {
         dividor = 1; // this should be handled with the ticks rather than dividors
         break;
     case SNIPE:
-        set_cpi_if_needed(dev, CONFIG_PMW3610_SNIPE_CPI);
+        err = set_cpi_if_needed(dev, snipe_cpi(data));
         dividor = CONFIG_PMW3610_SNIPE_CPI_DIVIDOR;
         break;
     default:
-        return -ENOTSUP;
+        err = -ENOTSUP;
+        goto unlock;
+    }
+
+    if (err) {
+        goto unlock;
     }
 
     data->curr_mode = input_mode;
@@ -620,9 +871,9 @@ static int pmw3610_report_data(const struct device *dev) {
     }
 #endif
 
-    int err = motion_burst_read(dev, buf, sizeof(buf));
+    err = motion_burst_read(dev, buf, sizeof(buf));
     if (err) {
-        return err;
+        goto unlock;
     }
 
     int16_t raw_x =
@@ -677,7 +928,7 @@ static int pmw3610_report_data(const struct device *dev) {
         data->last_poll_time = curr_time;
         data->last_x = x;
         data->last_y = y;
-        return 0;
+        goto unlock;
     } else {
         x += data->last_x;
         y += data->last_y;
@@ -694,22 +945,23 @@ static int pmw3610_report_data(const struct device *dev) {
         } else {
             data->scroll_delta_x += x;
             data->scroll_delta_y += y;
-            if (abs(data->scroll_delta_y) > CONFIG_PMW3610_SCROLL_TICK) {
+            if (abs(data->scroll_delta_y) > PMW3610_DRAG_SCROLL_TICK) {
                 input_report_rel(dev, INPUT_REL_WHEEL,
                                  data->scroll_delta_y > 0 ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE,
                                  true, K_FOREVER);
-                data->scroll_delta_x = 0;
                 data->scroll_delta_y = 0;
-            } else if (abs(data->scroll_delta_x) > CONFIG_PMW3610_SCROLL_TICK) {
+            }
+            if (abs(data->scroll_delta_x) > PMW3610_DRAG_SCROLL_TICK) {
                 input_report_rel(dev, INPUT_REL_HWHEEL,
                                  data->scroll_delta_x > 0 ? PMW3610_SCROLL_X_NEGATIVE : PMW3610_SCROLL_X_POSITIVE,
                                  true, K_FOREVER);
                 data->scroll_delta_x = 0;
-                data->scroll_delta_y = 0;
             }
         }
     }
 
+unlock:
+    k_mutex_unlock(&data->lock);
     return err;
 }
 
@@ -774,6 +1026,17 @@ static int pmw3610_init(const struct device *dev) {
 
     // init device pointer
     data->dev = dev;
+    k_mutex_init(&data->lock);
+    data->normal_cpi_index = normal_cpi_default_index(config);
+    data->snipe_cpi_index = snipe_cpi_default_index(config);
+    data->last_layer = UINT8_MAX;
+    data->sniping_enabled = false;
+    data->sniping_suppressed = false;
+    data->dragscroll_enabled = false;
+
+#if IS_ENABLED(CONFIG_SETTINGS)
+    k_work_init_delayable(&data->settings_save_work, pmw3610_settings_save_work);
+#endif
 
     // init smart algorithm flag;
     data->sw_smart_flag = false;
@@ -833,6 +1096,9 @@ static int pmw3610_init(const struct device *dev) {
         .scroll_layers_len = DT_PROP_LEN(DT_DRV_INST(n), scroll_layers),                           \
         .snipe_layers = snipe_layers##n,                                                           \
         .snipe_layers_len = DT_PROP_LEN(DT_DRV_INST(n), snipe_layers),                             \
+        .runtime_default_cpi = DT_PROP(DT_DRV_INST(n), runtime_default_cpi),                        \
+        .runtime_default_snipe_cpi =                                                               \
+            DT_PROP(DT_DRV_INST(n), runtime_default_snipe_cpi),                                    \
     };                                                                                             \
                                                                                                    \
     DEVICE_DT_INST_DEFINE(n, pmw3610_init, NULL, &data##n, &config##n, POST_KERNEL,                \

@@ -18,3 +18,11 @@ properties:
   automouse-layer:
     type: int
     default: -1
+  runtime-default-cpi:
+    type: int
+    default: 400
+    description: Initial normal CPI used by runtime pointer controls
+  runtime-default-snipe-cpi:
+    type: int
+    default: 400
+    description: Initial sniping CPI used by runtime pointer controls
