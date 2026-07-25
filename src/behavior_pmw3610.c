@@ -15,8 +15,7 @@
 #include <dt-bindings/zmk/pmw3610.h>
 #include <zmk/behavior.h>
 #include <zmk/hid.h>
-
-#include "pmw3610.h"
+#include <zmk/pmw3610.h>
 
 LOG_MODULE_REGISTER(pmw3610_behavior, CONFIG_ZMK_LOG_LEVEL);
 
