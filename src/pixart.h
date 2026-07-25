@@ -31,6 +31,7 @@ struct pixart_data {
     uint8_t snipe_cpi_index;
     uint8_t last_layer;
     bool sniping_enabled;
+    bool sniping_held;
     bool sniping_suppressed;
     bool dragscroll_enabled;
 

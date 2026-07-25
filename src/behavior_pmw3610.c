@@ -37,6 +37,8 @@ static const struct behavior_parameter_value_metadata command_values[] = {
      .value = PMW_SNIPE_SUPPRESS},
     {.display_name = "Drag Scroll", .type = BEHAVIOR_PARAMETER_VALUE_TYPE_VALUE,
      .value = PMW_DRAG_SCROLL},
+    {.display_name = "Hold Sniping", .type = BEHAVIOR_PARAMETER_VALUE_TYPE_VALUE,
+     .value = PMW_SNIPE_HOLD},
 };
 
 static const struct behavior_parameter_metadata_set command_metadata_set[] = {{
@@ -73,6 +75,7 @@ static int on_keymap_binding_released(struct zmk_behavior_binding *binding,
     switch (binding->param1) {
     case PMW_SNIPE_SUPPRESS:
     case PMW_DRAG_SCROLL:
+    case PMW_SNIPE_HOLD:
         return invoke_runtime_command(binding, false);
     default:
         return ZMK_BEHAVIOR_OPAQUE;

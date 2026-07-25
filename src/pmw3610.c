@@ -628,7 +628,7 @@ static enum pixart_input_mode get_input_mode_for_current_layer(const struct devi
         return SCROLL;
     }
 
-    if (data->sniping_enabled && !data->sniping_suppressed) {
+    if ((data->sniping_enabled || data->sniping_held) && !data->sniping_suppressed) {
         return SNIPE;
     }
 
@@ -782,6 +782,9 @@ int pmw3610_runtime_command(const struct device *dev, uint32_t command, bool pre
         break;
     case PMW_DRAG_SCROLL:
         data->dragscroll_enabled = pressed;
+        break;
+    case PMW_SNIPE_HOLD:
+        data->sniping_held = pressed;
         break;
     default:
         err = -ENOTSUP;
@@ -1031,6 +1034,7 @@ static int pmw3610_init(const struct device *dev) {
     data->snipe_cpi_index = snipe_cpi_default_index(config);
     data->last_layer = UINT8_MAX;
     data->sniping_enabled = false;
+    data->sniping_held = false;
     data->sniping_suppressed = false;
     data->dragscroll_enabled = false;
 
