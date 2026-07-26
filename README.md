@@ -125,9 +125,10 @@ Add the behavior node and command header to the keymap:
 
 The central behavior supports normal CPI increase/decrease, sniping CPI
 increase/decrease, sniping toggle/suppression/hold, and momentary drag-scroll.
-Normal CPI cycles from 400 through 3200 in 200 CPI steps. Sniping CPI cycles
-through 200, 400, 600, and 800. Holding either Shift key reverses CPI step
-direction. The initial values can be selected with the sensor node's
+Normal CPI ranges from 400 through 3200 in 200 CPI steps. Sniping CPI uses
+200, 400, 600, and 800. Both ranges stop at their minimum and maximum
+instead of wrapping. Holding either Shift key reverses CPI step direction. The
+initial values can be selected with the sensor node's
 `runtime-default-cpi` and `runtime-default-snipe-cpi` properties. Drag-scroll
 uses 200 CPI and `CONFIG_PMW3610_RUNTIME_SCROLL_TICK` as its wheel threshold.
 
@@ -157,4 +158,5 @@ and do not bind `PMW_SNIPE_TOGGLE`:
 
 When Zephyr settings are enabled, the normal and sniping CPI selections are
 saved after `CONFIG_PMW3610_SETTINGS_SAVE_DEBOUNCE_MS`. Mode state itself is not
-persisted.
+persisted. A saved CPI selection takes precedence over the initial devicetree
+value until settings are reset.

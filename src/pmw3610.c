@@ -658,7 +658,11 @@ static int apply_runtime_cpi(const struct device *dev) {
 }
 
 static uint8_t step_cpi_index(uint8_t current, uint8_t count, bool forward) {
-    return forward ? (current + 1) % count : (current + count - 1) % count;
+    if (forward) {
+        return current < count - 1 ? current + 1 : current;
+    }
+
+    return current > 0 ? current - 1 : current;
 }
 
 #if IS_ENABLED(CONFIG_SETTINGS)
@@ -750,20 +754,26 @@ int pmw3610_runtime_command(const struct device *dev, uint32_t command, bool pre
     case PMW_CPI_DEC:
         if (pressed) {
             const bool forward = (command == PMW_CPI_INC) != shifted;
+            const uint8_t previous_index = data->normal_cpi_index;
             data->normal_cpi_index = step_cpi_index(
                 data->normal_cpi_index, PMW3610_NORMAL_CPI_COUNT, forward);
-            save_settings = true;
-            LOG_INF("Normal CPI changed to %u", normal_cpi(data));
+            save_settings = data->normal_cpi_index != previous_index;
+            if (save_settings) {
+                LOG_INF("Normal CPI changed to %u", normal_cpi(data));
+            }
         }
         break;
     case PMW_SNIPE_CPI_INC:
     case PMW_SNIPE_CPI_DEC:
         if (pressed) {
             const bool forward = (command == PMW_SNIPE_CPI_INC) != shifted;
+            const uint8_t previous_index = data->snipe_cpi_index;
             data->snipe_cpi_index =
                 step_cpi_index(data->snipe_cpi_index, PMW3610_SNIPE_CPI_COUNT, forward);
-            save_settings = true;
-            LOG_INF("Sniping CPI changed to %u", snipe_cpi(data));
+            save_settings = data->snipe_cpi_index != previous_index;
+            if (save_settings) {
+                LOG_INF("Sniping CPI changed to %u", snipe_cpi(data));
+            }
         }
         break;
     case PMW_SNIPE_TOGGLE:
@@ -948,13 +958,13 @@ static int pmw3610_report_data(const struct device *dev) {
         } else {
             data->scroll_delta_x += x;
             data->scroll_delta_y += y;
-            if (abs(data->scroll_delta_y) > PMW3610_DRAG_SCROLL_TICK) {
+            if (abs(data->scroll_delta_y) >= PMW3610_DRAG_SCROLL_TICK) {
                 input_report_rel(dev, INPUT_REL_WHEEL,
                                  data->scroll_delta_y > 0 ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE,
                                  true, K_FOREVER);
                 data->scroll_delta_y = 0;
             }
-            if (abs(data->scroll_delta_x) > PMW3610_DRAG_SCROLL_TICK) {
+            if (abs(data->scroll_delta_x) >= PMW3610_DRAG_SCROLL_TICK) {
                 input_report_rel(dev, INPUT_REL_HWHEEL,
                                  data->scroll_delta_x > 0 ? PMW3610_SCROLL_X_NEGATIVE : PMW3610_SCROLL_X_POSITIVE,
                                  true, K_FOREVER);
