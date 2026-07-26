@@ -130,7 +130,9 @@ Normal CPI ranges from 400 through 3200 in 200 CPI steps. Sniping CPI uses
 instead of wrapping. Holding either Shift key reverses CPI step direction. The
 initial values can be selected with the sensor node's
 `runtime-default-cpi` and `runtime-default-snipe-cpi` properties. Drag-scroll
-uses 200 CPI and `CONFIG_PMW3610_RUNTIME_SCROLL_TICK` as its wheel threshold.
+uses the selected normal CPI, while holding sniping during drag-scroll uses the
+selected sniping CPI for finer scrolling. Both use
+`CONFIG_PMW3610_RUNTIME_SCROLL_TICK` as their wheel threshold.
 
 ```dts
 &pmw PMW_CPI_INC

@@ -27,7 +27,6 @@ LOG_MODULE_REGISTER(pmw3610, CONFIG_INPUT_LOG_LEVEL);
 #define PMW3610_SNIPE_CPI_MIN 200
 #define PMW3610_SNIPE_CPI_STEP 200
 #define PMW3610_SNIPE_CPI_COUNT 4
-#define PMW3610_DRAG_SCROLL_CPI 200
 #define PMW3610_SETTINGS_VERSION 1
 #define PMW3610_SETTINGS_KEY "pmw3610/runtime"
 
@@ -623,12 +622,17 @@ static enum pixart_input_mode get_input_mode_for_current_layer(const struct devi
 
     sync_sniping_to_current_layer(dev);
 
-    if (data->dragscroll_enabled ||
-        layer_is_listed(current_layer, config->scroll_layers, config->scroll_layers_len)) {
-        return SCROLL;
+    const bool scrolling =
+        data->dragscroll_enabled ||
+        layer_is_listed(current_layer, config->scroll_layers, config->scroll_layers_len);
+    const bool sniping =
+        (data->sniping_enabled || data->sniping_held) && !data->sniping_suppressed;
+
+    if (scrolling) {
+        return sniping ? SNIPE_SCROLL : SCROLL;
     }
 
-    if ((data->sniping_enabled || data->sniping_held) && !data->sniping_suppressed) {
+    if (sniping) {
         return SNIPE;
     }
 
@@ -638,7 +642,8 @@ static enum pixart_input_mode get_input_mode_for_current_layer(const struct devi
 static uint32_t cpi_for_mode(const struct pixart_data *data, enum pixart_input_mode mode) {
     switch (mode) {
     case SCROLL:
-        return PMW3610_DRAG_SCROLL_CPI;
+        return normal_cpi(data);
+    case SNIPE_SCROLL:
     case SNIPE:
         return snipe_cpi(data);
     case MOVE:
@@ -848,13 +853,15 @@ static int pmw3610_report_data(const struct device *dev) {
     int32_t dividor;
     enum pixart_input_mode input_mode = get_input_mode_for_current_layer(dev);
     bool input_mode_changed = data->curr_mode != input_mode;
+    bool scroll_mode = input_mode == SCROLL || input_mode == SNIPE_SCROLL;
     switch (input_mode) {
     case MOVE:
         err = set_cpi_if_needed(dev, normal_cpi(data));
         dividor = CONFIG_PMW3610_CPI_DIVIDOR;
         break;
     case SCROLL:
-        err = set_cpi_if_needed(dev, PMW3610_DRAG_SCROLL_CPI);
+    case SNIPE_SCROLL:
+        err = set_cpi_if_needed(dev, cpi_for_mode(data, input_mode));
         if (input_mode_changed) {
             data->scroll_delta_x = 0;
             data->scroll_delta_y = 0;
@@ -952,7 +959,7 @@ static int pmw3610_report_data(const struct device *dev) {
 #endif
 
     if (x != 0 || y != 0) {
-        if (input_mode != SCROLL) {
+        if (!scroll_mode) {
             input_report_rel(dev, INPUT_REL_X, x, false, K_FOREVER);
             input_report_rel(dev, INPUT_REL_Y, y, true, K_FOREVER);
         } else {
